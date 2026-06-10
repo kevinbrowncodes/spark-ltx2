@@ -51,7 +51,7 @@
   "i2v": {
     "class_type": "LTXVImgToVideoConditionOnly",
     "_meta": {"title": "Image -> video conditioning"},
-    "inputs": {"vae": ["ckpt", 2], "image": ["pre", 0], "latent": ["latv", 0], "strength": 0.7, "bypass": false}
+    "inputs": {"vae": ["ckpt", 2], "image": ["pre", 0], "latent": ["latv", 0], "strength": 0.5, "bypass": false}
   },
   "guider": {
     "class_type": "CFGGuider",
