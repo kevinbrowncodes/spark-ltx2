@@ -1,0 +1,14 @@
+# Model weights — tens of GB, never commit (repo is public)
+models/
+*.safetensors
+
+# Generated output
+output/
+*.mp4
+
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]

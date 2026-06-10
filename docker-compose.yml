@@ -1,0 +1,40 @@
+services:
+  # Containerized ComfyUI + official LTX-2.3 nodes. Isolated from the host
+  # ComfyUI on :8188 — exposed on :8189 only for browser debugging.
+  comfyui:
+    build:
+      context: .
+      dockerfile: Dockerfile.comfyui
+    image: spark-ltx2-comfyui:latest
+    container_name: ltx2-comfyui
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    ports:
+      - "8189:8188"   # host 8189 -> container 8188 (never collides with host ComfyUI)
+    volumes:
+      - ~/ltx2/models:/models:ro                                              # weights, read-only (no re-download/move)
+      - ./comfyui/extra_model_paths.yaml:/opt/ComfyUI/extra_model_paths.yaml:ro
+      - ~/Documents/cosmos-media:/opt/ComfyUI/input:ro                        # source images for LoadImage
+      - ~/ltx2/output:/opt/ComfyUI/output                                     # rendered mp4s
+    restart: unless-stopped
+
+  # Curl-able FastAPI front that drives ComfyUI over the private network.
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: spark-ltx2-api:latest
+    container_name: ltx2-api
+    depends_on:
+      - comfyui
+    environment:
+      - COMFYUI_URL=http://comfyui:8188
+      - LTX_WORKFLOW=/app/workflows/ltx23_i2v_api.json
+    ports:
+      - "8090:8090"
+    volumes:
+      - ~/ltx2/output:/output:ro          # read back finished renders
+      - ~/Documents/cosmos-media:/input:ro
+      - ./workflows:/app/workflows:ro     # iterate the I2V workflow JSON without rebuilds
+    restart: unless-stopped

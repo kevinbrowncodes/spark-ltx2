@@ -1,0 +1,17 @@
+# Maps the existing weights at ~/ltx2/models (mounted read-only at /models)
+# into ComfyUI's model folder names — WITHOUT copying or moving the ~51GB.
+#
+# On-disk layout (flat) at /models:
+#   ltx-2.3-22b-dev.safetensors                     -> checkpoints
+#   ltx-2.3-22b-distilled-lora-384.safetensors      -> loras
+#   ltx-2.3-spatial-upscaler-x2-1.0.safetensors     -> latent_upscale_models
+#   text_encoders/gemma-3-12b-it-qat-q4_0-unquantized/  -> text_encoders
+#
+# The same /models dir is exposed under several model types; ComfyUI just
+# lists files, and our workflow references specific names, so overlap is fine.
+spark_ltx2:
+  base_path: /models
+  checkpoints: ./
+  loras: ./
+  latent_upscale_models: ./
+  text_encoders: text_encoders/

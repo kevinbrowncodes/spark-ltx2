@@ -1,0 +1,48 @@
+# Containerized ComfyUI + official LTX-2.3 nodes. Fully self-contained:
+# this does NOT touch the host ComfyUI on :8188.
+#
+# Base is NGC PyTorch, which ships a prebuilt CUDA torch for aarch64 /
+# GB10 Blackwell. We pin that torch (and torchvision/torchaudio if present)
+# via a constraints file so ComfyUI + custom-node installs can't clobber it
+# with an incompatible wheel.
+FROM nvcr.io/nvidia/pytorch:25.12-py3
+
+RUN apt-get update && apt-get install -y git ffmpeg && rm -rf /var/lib/apt/lists/*
+
+# Freeze the container's torch stack into a constraints file.
+RUN python - <<'PY' > /tmp/torch-constraints.txt
+import torch
+print(f"torch=={torch.__version__}")
+try:
+    import torchvision
+    print(f"torchvision=={torchvision.__version__}")
+except Exception:
+    pass
+try:
+    import torchaudio
+    print(f"torchaudio=={torchaudio.__version__}")
+except Exception:
+    pass
+PY
+RUN echo "=== torch constraints ===" && cat /tmp/torch-constraints.txt
+
+# ComfyUI core
+WORKDIR /opt
+RUN git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git
+WORKDIR /opt/ComfyUI
+RUN pip install -r requirements.txt -c /tmp/torch-constraints.txt
+
+# Official Lightricks LTX-2 nodes + the RES4LYF sampler pack the official
+# 2.3 workflow relies on (ClownSampler_Beta / ManualSigmas).
+WORKDIR /opt/ComfyUI/custom_nodes
+RUN git clone --depth 1 https://github.com/Lightricks/ComfyUI-LTXVideo.git \
+ && git clone --depth 1 https://github.com/ClownsharkBatwing/RES4LYF.git
+RUN pip install -r ComfyUI-LTXVideo/requirements.txt -c /tmp/torch-constraints.txt
+RUN pip install -r RES4LYF/requirements.txt -c /tmp/torch-constraints.txt || \
+    echo "WARN: RES4LYF requirements partially failed; verify samplers load in logs"
+
+WORKDIR /opt/ComfyUI
+ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+EXPOSE 8188
+# --listen binds all interfaces inside the container network.
+CMD ["python", "main.py", "--listen", "0.0.0.0", "--port", "8188"]

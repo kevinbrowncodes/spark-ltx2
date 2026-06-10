@@ -1,0 +1,4 @@
+{
+  "_README": "PLACEHOLDER — finalized in the live build phase. This is the LTX-2.3 single-stage I2V workflow in ComfyUI *API* format (node_id -> {class_type, inputs, _meta}). It is derived from workflows/reference/LTX-2.3_T2V_I2V_Single_Stage_Distilled_Full.json with the cloud GemmaAPITextEncode path swapped for the local LTXVGemmaCLIPModelLoader encoder, and audio save dropped. Authored/validated against the running container's /object_info, then mounted into the api container. api_server.py patches: LoadImage.image, EmptyLTXVLatentVideo (width/height/length), the CLIPTextEncode nodes (positive, and the one whose _meta.title contains 'neg'), and the sampler seed.",
+  "_status": "not-yet-finalized"
+}

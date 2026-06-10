@@ -1,0 +1,15 @@
+# Thin, GPU-free FastAPI front. Accepts image+prompt over HTTP, submits the
+# LTX-2.3 I2V workflow to the ComfyUI container's /prompt API, waits for the
+# render, and returns the resulting mp4. This is the curl-able surface
+# (port 8090), mirroring the Cosmos setup.
+FROM python:3.12-slim
+
+RUN pip install --no-cache-dir "fastapi" "uvicorn[standard]" "requests" "python-multipart"
+
+WORKDIR /app
+COPY app/api_server.py /app/api_server.py
+# workflows/ is bind-mounted at runtime (see docker-compose.yml) so the
+# I2V workflow JSON can be iterated without rebuilding this image.
+
+EXPOSE 8090
+CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8090"]
