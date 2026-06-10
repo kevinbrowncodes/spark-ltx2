@@ -1,39 +1,62 @@
-# Containerized ComfyUI + official LTX-2.3 nodes. Fully self-contained:
-# this does NOT touch the host ComfyUI on :8188.
+# Containerized ComfyUI + official LTX-2.3 nodes, built for the DGX Spark's
+# GB10 Grace-Blackwell GPU (compute capability sm_121 / 12.1a). Fully
+# self-contained: does NOT touch the host ComfyUI on :8188.
 #
-# Base is NGC PyTorch, which ships a prebuilt CUDA torch for aarch64 /
-# GB10 Blackwell. We pin that torch (and torchvision/torchaudio if present)
-# via a constraints file so ComfyUI + custom-node installs can't clobber it
-# with an incompatible wheel.
-FROM nvcr.io/nvidia/pytorch:25.12-py3
+# WHY THIS IS NOT THE NGC PyTorch IMAGE:
+# The NGC pytorch:25.12 image ships an alpha torch (2.10.0a0) whose compiled
+# kernels stop at sm_120 — it has NO native sm_121 kernels for the GB10. Running
+# LTX-2.3 through sm_120 forward-compat produces subtly wrong numerics: the
+# video comes out gray / desaturated (SATAVG ~6 vs a normal 30-80), not a crash.
+# Every known-good DGX Spark LTX image fixes this the same way: stable cu130
+# torch + SageAttention compiled natively for sm_121a. This recipe mirrors
+# AEON-7/comfyui-aeon-spark and ecarmen16/SparkyUI.
+FROM nvidia/cuda:13.0.2-devel-ubuntu24.04
 
-RUN apt-get update && apt-get install -y git ffmpeg && rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-venv python3-dev python3-pip \
+      git ffmpeg ninja-build build-essential tini \
+ && rm -rf /var/lib/apt/lists/*
 
-# Freeze the container's torch stack into a constraints file.
+# Isolated venv so we never fight Ubuntu's PEP-668 system Python.
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --upgrade pip wheel setuptools
+
+# Stable cu130 torch stack that targets Blackwell. On cu130 the real torchaudio
+# works, so (unlike the NGC build) we need no torchaudio stub.
+RUN pip install --index-url https://download.pytorch.org/whl/cu130 \
+      torch==2.9.1+cu130 torchvision==0.24.1 torchaudio==2.9.1
+
+# Freeze the torch stack into a constraints file so ComfyUI + custom-node
+# installs can't clobber it with an incompatible wheel.
 RUN python - <<'PY' > /tmp/torch-constraints.txt
-import torch
+import torch, torchvision, torchaudio
 print(f"torch=={torch.__version__}")
-try:
-    import torchvision
-    print(f"torchvision=={torchvision.__version__}")
-except Exception:
-    pass
-try:
-    import torchaudio
-    print(f"torchaudio=={torchaudio.__version__}")
-except Exception:
-    pass
+print(f"torchvision=={torchvision.__version__}")
+print(f"torchaudio=={torchaudio.__version__}")
 PY
 RUN echo "=== torch constraints ===" && cat /tmp/torch-constraints.txt
 
-# ComfyUI core
+# --- SageAttention, compiled natively for the GB10 (sm_121a) ---------------
+# This is THE fix for the gray/desaturated output: native attention kernels for
+# compute capability 12.1a instead of sm_120 forward-compat. ComfyUI picks it up
+# at runtime via the --use-sage-attention flag.
+ENV TORCH_CUDA_ARCH_LIST="12.1a"
+ENV NVCC_APPEND_FLAGS="-gencode=arch=compute_121a,code=sm_121a -gencode=arch=compute_121,code=sm_121"
+RUN git clone --depth=1 https://github.com/thu-ml/SageAttention.git /opt/SageAttention \
+ && cd /opt/SageAttention \
+ && pip wheel --no-build-isolation -w /wheels . \
+ && pip install /wheels/sageattention*.whl
+
+# --- ComfyUI core ----------------------------------------------------------
 WORKDIR /opt
 RUN git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git
 WORKDIR /opt/ComfyUI
 RUN pip install -r requirements.txt -c /tmp/torch-constraints.txt
 
-# Official Lightricks LTX-2 nodes + the RES4LYF sampler pack the official
-# 2.3 workflow relies on (ClownSampler_Beta / ManualSigmas).
+# --- Official Lightricks LTX-2 nodes + RES4LYF samplers --------------------
+# RES4LYF provides ClownSampler_Beta / ManualSigmas used by the 2.3 workflow.
 WORKDIR /opt/ComfyUI/custom_nodes
 RUN git clone --depth 1 https://github.com/Lightricks/ComfyUI-LTXVideo.git \
  && git clone --depth 1 https://github.com/ClownsharkBatwing/RES4LYF.git
@@ -42,26 +65,16 @@ RUN pip install -r RES4LYF/requirements.txt -c /tmp/torch-constraints.txt || \
     echo "WARN: RES4LYF requirements partially failed; verify samplers load in logs"
 
 # ComfyUI-LTXVideo imports pyramid helpers (pad/is_powerof_two/...) that newer
-# kornia (0.8.x in the base image) removed. 0.7.4 is the newest kornia that
-# still exports them; pin it so the LTX nodes import.
+# kornia (0.8.x) removed. 0.7.4 is the newest kornia that still exports them.
 RUN pip install "kornia==0.7.4" -c /tmp/torch-constraints.txt
 
-# torchaudio on this NGC aarch64 image is ABI-incompatible with the bundled
-# torch dev build, and ComfyUI core hard-imports it at startup. If the real
-# import fails, drop in a minimal stub so ComfyUI can start (our I2V path is
-# video-only). Self-healing: if NVIDIA ships a working torchaudio later, the
-# real one is kept.
-COPY comfyui/torchaudio_stub/ /opt/torchaudio_stub/
-RUN python -c "import torchaudio" 2>/dev/null && echo "torchaudio OK — keeping real one" || ( \
-      echo "torchaudio broken — installing stub" && \
-      pip uninstall -y torchaudio 2>/dev/null || true && \
-      SP="$(python -c 'import site; print(site.getsitepackages()[0])')" && \
-      rm -rf "$SP/torchaudio" && \
-      cp -r /opt/torchaudio_stub/torchaudio "$SP/torchaudio" && \
-      python -c "import torchaudio; print('stub active:', torchaudio.__version__)" )
-
 WORKDIR /opt/ComfyUI
-ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# Grace-Blackwell coherent unified memory: disable torch.compile/dynamo (would
+# JIT-fail on sm_121a) and use expandable segments.
+ENV TORCH_COMPILE_DISABLE=1
+ENV TORCHDYNAMO_DISABLE=1
+ENV PYTORCH_ALLOC_CONF=expandable_segments:True
 EXPOSE 8188
-# --listen binds all interfaces inside the container network.
+# Launch flags live in docker-compose.yml so they can be tuned without a rebuild.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python", "main.py", "--listen", "0.0.0.0", "--port", "8188"]

@@ -10,6 +10,17 @@ services:
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+    # GB10/sm_121a launch flags (mirror the known-good DGX Spark images):
+    #   --use-sage-attention  native sm_121a attention (fixes gray/desaturated output)
+    #   --bf16-*              consistent bf16; unified memory makes bf16 free
+    #   --disable-pinned-memory  critical for Grace-Blackwell coherent memory
+    #   --reserve-vram 2.0    headroom so the unified pool doesn't thrash
+    command: >
+      python main.py --listen 0.0.0.0 --port 8188
+      --use-sage-attention
+      --bf16-unet --bf16-vae --bf16-text-enc
+      --disable-pinned-memory
+      --reserve-vram 2.0
     ports:
       - "8189:8188"   # host 8189 -> container 8188 (never collides with host ComfyUI)
     volumes:
