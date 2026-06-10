@@ -41,6 +41,25 @@ RUN pip install -r ComfyUI-LTXVideo/requirements.txt -c /tmp/torch-constraints.t
 RUN pip install -r RES4LYF/requirements.txt -c /tmp/torch-constraints.txt || \
     echo "WARN: RES4LYF requirements partially failed; verify samplers load in logs"
 
+# ComfyUI-LTXVideo imports pyramid helpers (pad/is_powerof_two/...) that newer
+# kornia (0.8.x in the base image) removed. 0.7.4 is the newest kornia that
+# still exports them; pin it so the LTX nodes import.
+RUN pip install "kornia==0.7.4" -c /tmp/torch-constraints.txt
+
+# torchaudio on this NGC aarch64 image is ABI-incompatible with the bundled
+# torch dev build, and ComfyUI core hard-imports it at startup. If the real
+# import fails, drop in a minimal stub so ComfyUI can start (our I2V path is
+# video-only). Self-healing: if NVIDIA ships a working torchaudio later, the
+# real one is kept.
+COPY comfyui/torchaudio_stub/ /opt/torchaudio_stub/
+RUN python -c "import torchaudio" 2>/dev/null && echo "torchaudio OK — keeping real one" || ( \
+      echo "torchaudio broken — installing stub" && \
+      pip uninstall -y torchaudio 2>/dev/null || true && \
+      SP="$(python -c 'import site; print(site.getsitepackages()[0])')" && \
+      rm -rf "$SP/torchaudio" && \
+      cp -r /opt/torchaudio_stub/torchaudio "$SP/torchaudio" && \
+      python -c "import torchaudio; print('stub active:', torchaudio.__version__)" )
+
 WORKDIR /opt/ComfyUI
 ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 EXPOSE 8188
