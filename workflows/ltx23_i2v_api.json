@@ -53,45 +53,20 @@
     "_meta": {"title": "Image -> video conditioning"},
     "inputs": {"vae": ["ckpt", 2], "image": ["pre", 0], "latent": ["latv", 0], "strength": 0.7, "bypass": false}
   },
-  "avae": {
-    "class_type": "LTXVAudioVAELoader",
-    "_meta": {"title": "Audio VAE (latent shape only)"},
-    "inputs": {"ckpt_name": "ltx-2.3-22b-dev.safetensors"}
-  },
-  "lata": {
-    "class_type": "LTXVEmptyLatentAudio",
-    "_meta": {"title": "Empty audio latent"},
-    "inputs": {"frames_number": 121, "frame_rate": 30, "batch_size": 1, "audio_vae": ["avae", 0]}
-  },
-  "cat": {
-    "class_type": "LTXVConcatAVLatent",
-    "_meta": {"title": "Concat A/V latent"},
-    "inputs": {"video_latent": ["i2v", 0], "audio_latent": ["lata", 0]}
-  },
-  "gpA": {
-    "class_type": "GuiderParameters",
-    "_meta": {"title": "Guider params (audio)"},
-    "inputs": {"modality": "AUDIO", "cfg": 7, "stg": 1, "perturb_attn": true, "rescale": 0.7, "modality_scale": 3, "skip_step": 0, "cross_attn": true}
-  },
-  "gpV": {
-    "class_type": "GuiderParameters",
-    "_meta": {"title": "Guider params (video)"},
-    "inputs": {"modality": "VIDEO", "cfg": 3, "stg": 1, "perturb_attn": true, "rescale": 0.9, "modality_scale": 3, "skip_step": 0, "cross_attn": true, "parameters": ["gpA", 0]}
-  },
   "guider": {
-    "class_type": "MultimodalGuider",
-    "_meta": {"title": "Multimodal guider"},
-    "inputs": {"model": ["lora", 0], "positive": ["cond", 0], "negative": ["cond", 1], "parameters": ["gpV", 0], "skip_blocks": "28"}
+    "class_type": "CFGGuider",
+    "_meta": {"title": "Native CFG guider (video-only test)"},
+    "inputs": {"model": ["lora", 0], "positive": ["cond", 0], "negative": ["cond", 1], "cfg": 3.0}
+  },
+  "sampler": {
+    "class_type": "KSamplerSelect",
+    "_meta": {"title": "Native sampler"},
+    "inputs": {"sampler_name": "euler"}
   },
   "sched": {
     "class_type": "LTXVScheduler",
     "_meta": {"title": "Sigma schedule"},
-    "inputs": {"steps": 15, "max_shift": 2.05, "base_shift": 0.95, "stretch": true, "terminal": 0.1, "latent": ["cat", 0]}
-  },
-  "sampler": {
-    "class_type": "ClownSampler_Beta",
-    "_meta": {"title": "Distilled sampler"},
-    "inputs": {"eta": 0.25, "sampler_name": "exponential/res_2s", "seed": 42, "bongmath": true}
+    "inputs": {"steps": 8, "max_shift": 2.05, "base_shift": 0.95, "stretch": true, "terminal": 0.1, "latent": ["i2v", 0]}
   },
   "noise": {
     "class_type": "RandomNoise",
@@ -100,18 +75,13 @@
   },
   "samp": {
     "class_type": "SamplerCustomAdvanced",
-    "_meta": {"title": "Sample"},
-    "inputs": {"noise": ["noise", 0], "guider": ["guider", 0], "sampler": ["sampler", 0], "sigmas": ["sched", 0], "latent_image": ["cat", 0]}
-  },
-  "sep": {
-    "class_type": "LTXVSeparateAVLatent",
-    "_meta": {"title": "Split A/V latent"},
-    "inputs": {"av_latent": ["samp", 0]}
+    "_meta": {"title": "Sample (native)"},
+    "inputs": {"noise": ["noise", 0], "guider": ["guider", 0], "sampler": ["sampler", 0], "sigmas": ["sched", 0], "latent_image": ["i2v", 0]}
   },
   "dec": {
     "class_type": "LTXVTiledVAEDecode",
-    "_meta": {"title": "Decode video"},
-    "inputs": {"vae": ["ckpt", 2], "latents": ["sep", 0], "horizontal_tiles": 2, "vertical_tiles": 2, "overlap": 6, "last_frame_fix": false, "working_device": "auto", "working_dtype": "auto"}
+    "_meta": {"title": "Decode video (tiled, memory-safe)"},
+    "inputs": {"vae": ["ckpt", 2], "latents": ["samp", 0], "horizontal_tiles": 2, "vertical_tiles": 2, "overlap": 6, "last_frame_fix": false, "working_device": "auto", "working_dtype": "auto"}
   },
   "vid": {
     "class_type": "CreateVideo",
@@ -121,6 +91,6 @@
   "save": {
     "class_type": "SaveVideo",
     "_meta": {"title": "Save mp4"},
-    "inputs": {"video": ["vid", 0], "filename_prefix": "ltx_i2v", "format": "auto", "codec": "auto"}
+    "inputs": {"video": ["vid", 0], "filename_prefix": "ltx_i2v_native", "format": "auto", "codec": "auto"}
   }
 }
