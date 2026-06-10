@@ -81,12 +81,16 @@ def _patch_workflow(wf: dict, r: Gen) -> dict:
         elif ctype in _LATENT_TYPES:
             inputs["width"] = r.width
             inputs["height"] = r.height
-            # node calls this 'length' (number of frames)
-            if "length" in inputs:
-                inputs["length"] = r.num_frames
-            else:
-                inputs["num_frames"] = r.num_frames
+            inputs["length"] = r.num_frames
             patched_latent = True
+        elif ctype == "LTXVEmptyLatentAudio":
+            # keep the (empty) audio latent aligned with the video
+            inputs["frames_number"] = r.num_frames
+            inputs["frame_rate"] = int(round(r.frame_rate))
+        elif ctype == "LTXVConditioning":
+            inputs["frame_rate"] = float(r.frame_rate)
+        elif ctype == "CreateVideo":
+            inputs["fps"] = float(r.frame_rate)
         elif ctype in _TEXT_ENCODE_TYPES and "text" in inputs:
             if "neg" in title:
                 inputs["text"] = r.negative_prompt

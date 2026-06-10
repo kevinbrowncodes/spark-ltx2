@@ -1,4 +1,126 @@
 {
-  "_README": "PLACEHOLDER — finalized in the live build phase. This is the LTX-2.3 single-stage I2V workflow in ComfyUI *API* format (node_id -> {class_type, inputs, _meta}). It is derived from workflows/reference/LTX-2.3_T2V_I2V_Single_Stage_Distilled_Full.json with the cloud GemmaAPITextEncode path swapped for the local LTXVGemmaCLIPModelLoader encoder, and audio save dropped. Authored/validated against the running container's /object_info, then mounted into the api container. api_server.py patches: LoadImage.image, EmptyLTXVLatentVideo (width/height/length), the CLIPTextEncode nodes (positive, and the one whose _meta.title contains 'neg'), and the sampler seed.",
-  "_status": "not-yet-finalized"
+  "ckpt": {
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {"title": "LTX-2.3 checkpoint"},
+    "inputs": {"ckpt_name": "ltx-2.3-22b-dev.safetensors"}
+  },
+  "lora": {
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {"title": "Distilled LoRA"},
+    "inputs": {"model": ["ckpt", 0], "lora_name": "ltx-2.3-22b-distilled-lora-384.safetensors", "strength_model": 0.5}
+  },
+  "gemma": {
+    "class_type": "LTXVGemmaCLIPModelLoader",
+    "_meta": {"title": "Local Gemma-3 text encoder"},
+    "inputs": {
+      "gemma_path": "gemma-3-12b-it-qat-q4_0-unquantized/model-00001-of-00005.safetensors",
+      "ltxv_path": "ltx-2.3-22b-dev.safetensors",
+      "max_length": 1024
+    }
+  },
+  "pos": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Positive Prompt"},
+    "inputs": {"text": "PLACEHOLDER_POSITIVE", "clip": ["gemma", 0]}
+  },
+  "neg": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "Negative Prompt"},
+    "inputs": {"text": "PLACEHOLDER_NEGATIVE", "clip": ["gemma", 0]}
+  },
+  "cond": {
+    "class_type": "LTXVConditioning",
+    "_meta": {"title": "LTXV Conditioning"},
+    "inputs": {"positive": ["pos", 0], "negative": ["neg", 0], "frame_rate": 30.0}
+  },
+  "img": {
+    "class_type": "LoadImage",
+    "_meta": {"title": "Input image (I2V)"},
+    "inputs": {"image": "PLACEHOLDER_IMAGE"}
+  },
+  "pre": {
+    "class_type": "LTXVPreprocess",
+    "_meta": {"title": "Preprocess image"},
+    "inputs": {"image": ["img", 0], "img_compression": 18}
+  },
+  "latv": {
+    "class_type": "EmptyLTXVLatentVideo",
+    "_meta": {"title": "Empty video latent"},
+    "inputs": {"width": 704, "height": 1280, "length": 121, "batch_size": 1}
+  },
+  "i2v": {
+    "class_type": "LTXVImgToVideoConditionOnly",
+    "_meta": {"title": "Image -> video conditioning"},
+    "inputs": {"vae": ["ckpt", 2], "image": ["pre", 0], "latent": ["latv", 0], "strength": 0.7, "bypass": false}
+  },
+  "avae": {
+    "class_type": "LTXVAudioVAELoader",
+    "_meta": {"title": "Audio VAE (latent shape only)"},
+    "inputs": {"ckpt_name": "ltx-2.3-22b-dev.safetensors"}
+  },
+  "lata": {
+    "class_type": "LTXVEmptyLatentAudio",
+    "_meta": {"title": "Empty audio latent"},
+    "inputs": {"frames_number": 121, "frame_rate": 30, "batch_size": 1, "audio_vae": ["avae", 0]}
+  },
+  "cat": {
+    "class_type": "LTXVConcatAVLatent",
+    "_meta": {"title": "Concat A/V latent"},
+    "inputs": {"video_latent": ["i2v", 0], "audio_latent": ["lata", 0]}
+  },
+  "gpA": {
+    "class_type": "GuiderParameters",
+    "_meta": {"title": "Guider params (audio)"},
+    "inputs": {"modality": "AUDIO", "cfg": 7, "stg": 1, "perturb_attn": true, "rescale": 0.7, "modality_scale": 3, "skip_step": 0, "cross_attn": true}
+  },
+  "gpV": {
+    "class_type": "GuiderParameters",
+    "_meta": {"title": "Guider params (video)"},
+    "inputs": {"modality": "VIDEO", "cfg": 3, "stg": 1, "perturb_attn": true, "rescale": 0.9, "modality_scale": 3, "skip_step": 0, "cross_attn": true, "parameters": ["gpA", 0]}
+  },
+  "guider": {
+    "class_type": "MultimodalGuider",
+    "_meta": {"title": "Multimodal guider"},
+    "inputs": {"model": ["lora", 0], "positive": ["cond", 0], "negative": ["cond", 1], "parameters": ["gpV", 0], "skip_blocks": "28"}
+  },
+  "sched": {
+    "class_type": "LTXVScheduler",
+    "_meta": {"title": "Sigma schedule"},
+    "inputs": {"steps": 15, "max_shift": 2.05, "base_shift": 0.95, "stretch": true, "terminal": 0.1, "latent": ["cat", 0]}
+  },
+  "sampler": {
+    "class_type": "ClownSampler_Beta",
+    "_meta": {"title": "Distilled sampler"},
+    "inputs": {"eta": 0.25, "sampler_name": "exponential/res_2s", "seed": 42, "bongmath": true}
+  },
+  "noise": {
+    "class_type": "RandomNoise",
+    "_meta": {"title": "Noise"},
+    "inputs": {"noise_seed": 42}
+  },
+  "samp": {
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {"title": "Sample"},
+    "inputs": {"noise": ["noise", 0], "guider": ["guider", 0], "sampler": ["sampler", 0], "sigmas": ["sched", 0], "latent_image": ["cat", 0]}
+  },
+  "sep": {
+    "class_type": "LTXVSeparateAVLatent",
+    "_meta": {"title": "Split A/V latent"},
+    "inputs": {"av_latent": ["samp", 0]}
+  },
+  "dec": {
+    "class_type": "LTXVTiledVAEDecode",
+    "_meta": {"title": "Decode video"},
+    "inputs": {"vae": ["ckpt", 2], "latents": ["sep", 0], "horizontal_tiles": 2, "vertical_tiles": 2, "overlap": 6, "last_frame_fix": false, "working_device": "auto", "working_dtype": "auto"}
+  },
+  "vid": {
+    "class_type": "CreateVideo",
+    "_meta": {"title": "Assemble video (no audio)"},
+    "inputs": {"images": ["dec", 0], "fps": 30.0}
+  },
+  "save": {
+    "class_type": "SaveVideo",
+    "_meta": {"title": "Save mp4"},
+    "inputs": {"video": ["vid", 0], "filename_prefix": "ltx_i2v", "format": "auto", "codec": "auto"}
+  }
 }
