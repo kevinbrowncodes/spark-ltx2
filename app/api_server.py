@@ -13,6 +13,7 @@ upscale paths are exposed here.
 
 import json
 import os
+import threading
 import time
 import uuid
 
@@ -28,6 +29,32 @@ POLL_TIMEOUT_S = int(os.environ.get("LTX_POLL_TIMEOUT_S", "1800"))
 
 CLIENT_ID = uuid.uuid4().hex
 app = FastAPI(title="spark-ltx2 I2V")
+
+# In-memory job registry (STORY_001). A render is submitted, a job_id is handed
+# back immediately, and a background thread watches ComfyUI's /history and writes
+# the terminal state here. Lost on restart — acceptable for a single-host service.
+_JOBS: dict[str, dict] = {}
+_JOBS_LOCK = threading.Lock()
+_JOB_TTL_S = 3600  # prune completed/failed records older than this on each submit
+
+
+def _set_job(job_id: str, **fields) -> None:
+    with _JOBS_LOCK:
+        _JOBS.setdefault(job_id, {}).update(fields)
+
+
+def _prune_jobs() -> None:
+    """Drop terminal jobs older than _JOB_TTL_S so the map can't grow forever."""
+    now = time.time()
+    with _JOBS_LOCK:
+        stale = [
+            jid
+            for jid, j in _JOBS.items()
+            if j.get("status") in ("completed", "failed")
+            and now - j.get("started", now) > _JOB_TTL_S
+        ]
+        for jid in stale:
+            del _JOBS[jid]
 
 # Class types we recognize when patching the workflow graph.
 _TEXT_ENCODE_TYPES = {"CLIPTextEncode", "GemmaAPITextEncode", "LTXVGemmaEnhancePrompt"}
@@ -147,27 +174,64 @@ def health():
         raise HTTPException(503, f"ComfyUI unreachable at {COMFYUI_URL}: {e}")
 
 
-@app.post("/generate")
+def _watch_render(job_id: str, prompt_id: str) -> None:
+    """Background worker: poll ComfyUI's /history until the render reaches a
+    terminal state, then record it on the job. Every exit path is terminal —
+    a stall or error can never leave the job stuck 'running' (BUG_001)."""
+    deadline = time.time() + POLL_TIMEOUT_S
+    try:
+        while time.time() < deadline:
+            try:
+                hist = _comfy("GET", f"/history/{prompt_id}").json()
+            except HTTPException:
+                # Transient ComfyUI/network blip — keep trying until the deadline.
+                time.sleep(2)
+                continue
+            entry = hist.get(prompt_id)
+            if entry:
+                status = entry.get("status", {})
+                if status.get("status_str") == "error":
+                    _set_job(job_id, status="failed", error=f"ComfyUI render error: {status}")
+                    return
+                filename = _collect_video(entry.get("outputs", {}))
+                if filename:
+                    _set_job(job_id, status="completed", output=filename)
+                    return
+            time.sleep(2)
+        _set_job(job_id, status="failed", error=f"Render timed out after {POLL_TIMEOUT_S}s")
+    except Exception as exc:  # never let the watcher die silently
+        _set_job(job_id, status="failed", error=f"render watcher crashed: {exc}")
+
+
+@app.post("/generate", status_code=202)
 def generate(r: Gen):
     if r.width % 32 or r.height % 32:
         raise HTTPException(422, "width and height must be divisible by 32")
     if (r.num_frames - 1) % 8:
         raise HTTPException(422, "num_frames must be 8k+1 (e.g. 121, 193)")
 
+    _prune_jobs()
     wf = _patch_workflow(_load_workflow(), r)
     resp = _comfy("POST", "/prompt", json={"prompt": wf, "client_id": CLIENT_ID})
     prompt_id = resp.json()["prompt_id"]
 
-    deadline = time.time() + POLL_TIMEOUT_S
-    while time.time() < deadline:
-        hist = _comfy("GET", f"/history/{prompt_id}").json()
-        if prompt_id in hist:
-            entry = hist[prompt_id]
-            status = entry.get("status", {})
-            if status.get("status_str") == "error":
-                raise HTTPException(500, f"ComfyUI render error: {status}")
-            filename = _collect_video(entry.get("outputs", {}))
-            if filename:
-                return {"output": filename, "prompt_id": prompt_id}
-        time.sleep(2)
-    raise HTTPException(504, f"Render timed out after {POLL_TIMEOUT_S}s (prompt {prompt_id})")
+    job_id = uuid.uuid4().hex
+    _set_job(
+        job_id,
+        status="running",
+        output=None,
+        error=None,
+        prompt_id=prompt_id,
+        started=time.time(),
+    )
+    threading.Thread(target=_watch_render, args=(job_id, prompt_id), daemon=True).start()
+    return {"job_id": job_id, "prompt_id": prompt_id, "status": "running"}
+
+
+@app.get("/jobs/{job_id}")
+def job_status(job_id: str):
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(404, f"Unknown job_id {job_id}")
+    return {"job_id": job_id, **job}
